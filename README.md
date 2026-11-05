@@ -47,9 +47,10 @@ A seed check (seeds 42, 7, and 123, with random group folds) showed run-to-run s
 
 ## Known issues
 
-- **Sparse targets.** B, Na, P, S, and Zn have about 1,900 measured rows each, and the models barely beat the training mean for them. Their predictions are less reliable than those for the other nutrients.
-- **Test-set shift.** The mean of kept test predictions is about 2.3 times the measured training mean for P, 1.8 for B, and 1.5 for S. Depth did not explain this. The cause has not yet been established, so these submitted values should be treated with caution.
-- **Local scores only.** The CV numbers above come from local validation and cannot be compared with the official private leaderboard.
+## Known issues
+
+- **Sparse targets.** B, Na, P, S, and Zn have about 1,900 measured rows each, and the models only slightly beat predicting the training mean for them. Their predictions carry more uncertainty than the other nutrients.
+- **Test-set shift.** For P, B, and S, the average of the kept test predictions is 1.5 to 2.3 times the measured training average. Depth does not explain this. Treat these submitted values with caution until the cause is found.
 
 ## Reproducing the results
 
@@ -83,14 +84,7 @@ requirements.txt
 - [x] Grouped CV baseline and seed check
 - [x] Depth comparison and final model
 - [x] Submission file format checked
-- [ ] Sentinel-2 features (script drafted, not yet run)
-- [ ] Investigation of the P, B, and S test-set shift
-- [ ] Blending of sparse-target predictions with the training mean
-
-## License
-
-Code is released under the MIT License. Challenge data remains subject to the Zindi challenge rules and is not included in this repository.
 
 ## Author
 
-Haruna Isola Aremu
+Haruna Aremu
