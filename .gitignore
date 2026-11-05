@@ -3,3 +3,6 @@ data/
 *.tif
 __pycache__/
 .ipynb_checkpoints/
+results/predictions*.csv
+results/submission*.csv
+results/sentinel2*
