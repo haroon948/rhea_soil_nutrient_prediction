@@ -1,0 +1,180 @@
+---
+title: "Final model: WorldClim bioclimatic features with depth"
+author: "Haruna Isola Aremu"
+jupyter: python3
+format:
+  html:
+    toc: true
+execute:
+  echo: true
+---
+
+## Setup
+
+Run this file from the `notebooks` folder so the relative paths resolve to `data` and `results`.
+
+```{python}
+import re
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from lightgbm import LGBMRegressor
+from sklearn.model_selection import GroupKFold
+
+RAW = Path("..") / "data" / "raw"
+PROC = Path("..") / "data" / "processed"
+RESULTS = Path("..") / "results"
+RESULTS.mkdir(exist_ok=True)
+
+TARGETS = ["Al", "B", "Ca", "Cu", "Fe", "K", "Mg", "Mn", "N", "Na", "P", "S", "Zn"]
+TARGET_COLS = [f"Target_{t}" for t in TARGETS]
+SEED = 42
+N_SPLITS = 5
+
+
+def make_model():
+    return LGBMRegressor(n_estimators=500, learning_rate=0.05,
+                         random_state=SEED, verbose=-1)
+```
+
+## Load the data
+
+```{python}
+train = pd.read_csv(RAW / "Train.csv")
+test = pd.read_csv(RAW / "TestSet.csv")
+X_bio_train = pd.read_csv(PROC / "worldclim_train.csv")
+X_bio_test = pd.read_csv(PROC / "worldclim_test.csv")
+```
+
+## Convert depth labels to numbers
+
+Each depth label such as `0-20` is replaced by the midpoint of its range.
+
+```{python}
+def depth_midpoint(label):
+    lower, upper = re.findall(r"\d+(?:\.\d+)?", str(label))
+    return (float(lower) + float(upper)) / 2
+
+
+train_depth = train["Depth_cm"].map(depth_midpoint)
+test_depth = test["Depth_cm"].map(depth_midpoint)
+```
+
+## Build feature sets with depth
+
+```{python}
+X_dep_train = X_bio_train.assign(Depth_cm=train_depth.values)
+X_dep_test = X_bio_test.assign(Depth_cm=test_depth.values)
+
+groups = train.groupby(["Latitude", "Longitude"]).ngroup()
+```
+
+## Compare grouped CV with and without depth
+
+Grouped CV keeps all samples from one location in the same fold. The results are saved to `results/depth_comparison.csv`. Set `RUN_CV` to `True` to recompute them.
+
+```{python}
+def cv_rmse(X, y, groups):
+    mask = y.notna().values
+    X = X[mask].reset_index(drop=True)
+    y = y[mask].reset_index(drop=True)
+    g = groups[mask].reset_index(drop=True)
+    scores = []
+    for tr, va in GroupKFold(n_splits=N_SPLITS).split(X, y, g):
+        model = make_model()
+        model.fit(X.iloc[tr], y.iloc[tr])
+        pred = model.predict(X.iloc[va])
+        scores.append(np.sqrt(np.mean((pred - y.iloc[va].values) ** 2)))
+    return np.mean(scores)
+
+
+RUN_CV = False
+depth_file = RESULTS / "depth_comparison.csv"
+
+if RUN_CV or not depth_file.exists():
+    rows = []
+    for t in TARGETS:
+        bio = cv_rmse(X_bio_train, train[t], groups)
+        dep = cv_rmse(X_dep_train, train[t], groups)
+        rows.append({"target": t, "rmse_bio": bio, "rmse_bio_depth": dep,
+                     "change_pct": 100 * (dep - bio) / bio})
+    depth_check = pd.DataFrame(rows)
+    depth_check.to_csv(depth_file, index=False)
+else:
+    depth_check = pd.read_csv(depth_file)
+
+depth_check.round(3)
+```
+
+## Choose the feature set
+
+Depth lowered RMSE for Al, Ca, Fe, and N, and no target got meaningfully worse, so the final models use depth.
+
+```{python}
+USE_DEPTH = True
+
+X_train = X_dep_train if USE_DEPTH else X_bio_train
+X_test = X_dep_test if USE_DEPTH else X_bio_test
+```
+
+## Train one model per nutrient
+
+Each nutrient is trained only on the training rows where it was measured.
+
+```{python}
+preds = {}
+for t in TARGETS:
+    mask = train[t].notna().values
+    model = make_model()
+    model.fit(X_train[mask], train.loc[mask, t])
+    preds[t] = model.predict(X_test)
+
+pred_df = pd.DataFrame(preds)
+pred_df.insert(0, "ID", test["ID"].values)
+```
+
+## Clip negative predictions and save
+
+Concentrations cannot be negative, so negative predictions are set to zero.
+
+```{python}
+pred_df[TARGETS] = pred_df[TARGETS].clip(lower=0)
+
+pred_df.to_csv(RESULTS / "predictions_bio_depth.csv", index=False)
+```
+
+## Build the submission
+
+`TargetPred_To_Keep.csv` marks the entries the platform scores. Entries marked 0 are set to zero.
+
+```{python}
+ref = pd.read_csv(RAW / "TargetPred_To_Keep.csv").set_index("ID")
+ref_aligned = ref.loc[test["ID"]]
+
+submission = pd.DataFrame({"ID": test["ID"].values})
+for t in TARGETS:
+    keep = ref_aligned[t].values == 1
+    submission[f"Target_{t}"] = np.where(keep, pred_df[t].values, 0.0)
+
+submission.to_csv(RESULTS / "submission_bio_depth.csv", index=False)
+submission.head()
+```
+
+## Check the predictions against the training data
+
+The mean ratio uses only the rows the platform scores.
+
+```{python}
+kept = {t: ref_aligned[t].values == 1 for t in TARGETS}
+
+kept_check = pd.DataFrame({
+    "target": TARGETS,
+    "train_measured_mean": [train.loc[train[t].notna(), t].mean() for t in TARGETS],
+    "kept_pred_mean": [pred_df.loc[kept[t], t].mean() for t in TARGETS],
+    "n_kept": [int(kept[t].sum()) for t in TARGETS],
+})
+kept_check["ratio"] = kept_check["kept_pred_mean"] / kept_check["train_measured_mean"]
+
+kept_check.round(3)
+```
